@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -7,8 +8,8 @@ using GitHub.DistributedTask.Pipelines;
 using GitHub.DistributedTask.Pipelines.ContextData;
 using GitHub.DistributedTask.WebApi;
 using GitHub.Runner.Common;
-using GitHub.Runner.Sdk;
 using GitHub.Runner.Common.Util;
+using GitHub.Runner.Sdk;
 using GitHub.Runner.Worker.Container;
 using GitHub.Runner.Worker.Container.ContainerHooks;
 
@@ -57,10 +58,18 @@ namespace GitHub.Runner.Worker.Handlers
             {
                 Environment["ACTIONS_CACHE_URL"] = cacheUrl;
             }
+            if (systemConnection.Data.TryGetValue("PipelinesServiceUrl", out var pipelinesServiceUrl) && !string.IsNullOrEmpty(pipelinesServiceUrl))
+            {
+                Environment["ACTIONS_RUNTIME_URL"] = pipelinesServiceUrl;
+            }
             if (systemConnection.Data.TryGetValue("GenerateIdTokenUrl", out var generateIdTokenUrl) && !string.IsNullOrEmpty(generateIdTokenUrl))
             {
                 Environment["ACTIONS_ID_TOKEN_REQUEST_URL"] = generateIdTokenUrl;
                 Environment["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] = systemConnection.Authorization.Parameters[EndpointAuthorizationParameters.AccessToken];
+            }
+            if (systemConnection.Data.TryGetValue("ResultsServiceUrl", out var resultsUrl) && !string.IsNullOrEmpty(resultsUrl))
+            {
+                Environment["ACTIONS_RESULTS_URL"] = resultsUrl;
             }
 
             // Resolve the target script.
@@ -84,7 +93,6 @@ namespace GitHub.Runner.Worker.Handlers
                 ExecutionContext.StepTelemetry.HasPreStep = Data.HasPre;
                 ExecutionContext.StepTelemetry.HasPostStep = Data.HasPost;
             }
-            ExecutionContext.StepTelemetry.Type = Data.NodeVersion;
 
             ArgUtil.NotNullOrEmpty(target, nameof(target));
             target = Path.Combine(ActionDirectory, target);
@@ -97,21 +105,8 @@ namespace GitHub.Runner.Worker.Handlers
                 workingDirectory = HostContext.GetDirectory(WellKnownDirectory.Work);
             }
 
-#if OS_OSX
-            if (string.Equals(Data.NodeVersion, "node12", StringComparison.OrdinalIgnoreCase) &&
-                Constants.Runner.PlatformArchitecture.Equals(Constants.Architecture.Arm64))
-            {
-                ExecutionContext.Output($"The node12 is not supported on macOS ARM64 platform. Use node16 instead.");
-                Data.NodeVersion = "node16";
-            }
-#endif
-            string forcedNodeVersion = System.Environment.GetEnvironmentVariable(Constants.Variables.Agent.ForcedActionsNodeVersion);
-
-            if (forcedNodeVersion == "node16" && Data.NodeVersion != "node16")
-            {
-                Data.NodeVersion = "node16";
-            }
             var nodeRuntimeVersion = await StepHost.DetermineNodeRuntimeVersion(ExecutionContext, Data.NodeVersion);
+            ExecutionContext.StepTelemetry.Type = nodeRuntimeVersion;
             string file = Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Externals), nodeRuntimeVersion, "bin", $"node{IOUtil.ExeExtension}");
 
             // Format the arguments passed to node.
@@ -130,17 +125,6 @@ namespace GitHub.Runner.Worker.Handlers
 
             // Remove environment variable that may cause conflicts with the node within the runner.
             Environment.Remove("NODE_ICU_DATA"); // https://github.com/actions/runner/issues/795
-
-            if (Data.NodeVersion == "node12" && (ExecutionContext.Global.Variables.GetBoolean(Constants.Runner.Features.Node12Warning) ?? false))
-            {
-                if (!ExecutionContext.JobContext.ContainsKey("Node12ActionsWarnings"))
-                {                     
-                    ExecutionContext.JobContext["Node12ActionsWarnings"] = new ArrayContextData();
-                }
-                var repoAction = Action as RepositoryPathReference;
-                var actionDisplayName = new StringContextData(repoAction.Name ?? repoAction.Path); // local actions don't have a 'Name'                
-                ExecutionContext.JobContext["Node12ActionsWarnings"].AssertArray("Node12ActionsWarnings").Add(actionDisplayName);
-            }
 
             using (var stdoutManager = new OutputManager(ExecutionContext, ActionCommandManager))
             using (var stderrManager = new OutputManager(ExecutionContext, ActionCommandManager))
